@@ -4,7 +4,8 @@ class Home {
 			items: undefined,
 			item: new Map(),
 		};
-		this.itemQuery = { ImageTypes: "Backdrop", EnableImageTypes: "Logo,Backdrop", IncludeItemTypes: "Movie,Series", SortBy: "ProductionYear, PremiereDate, SortName", Recursive: true, ImageTypeLimit: 1, Limit: 10, Fields: "ProductionYear", SortOrder: "Descending", EnableUserData: false, EnableTotalRecordCount: false };
+		this.config = new Config();
+		this.itemQuery = this.config.itemQuery;
 		this.coverOptions = { type: "Backdrop", maxWidth: 3000 };
 		this.logoOptions = { type: "Logo", maxWidth: 3000 };
 		this.initStart = false;
@@ -22,7 +23,7 @@ class Home {
 					this.init();
 				}
 			}
-		}, 233);
+		}, 100);
 	}
 
 	static async init() {
@@ -92,12 +93,20 @@ class Home {
 	}
 
 	static getItems(query) {
-		if (this.cache.items == undefined) {
-			this.cache.items = this.injectCall("getItems", "client.getCurrentUserId(), " + JSON.stringify(query));
-		}
-		return this.cache.items;
+		//由于要合并多个媒体库所以放弃做缓存
+		return this.injectCall("getItems", "client.getCurrentUserId(), " + JSON.stringify(query));
 	}
 
+	static itemsRandom(array){
+		let res = [], random;
+		while(array.length>0){
+			random = Math.floor(Math.random()*array.length);
+			res.push(array[random]);
+			array.splice(random, 1);
+		}
+		return res;
+	}
+	
 	static async getItem(itemId) {
 		// 双缓存 优先使用 WebStorage
 		if (typeof Storage !== "undefined" && !localStorage.getItem("CACHE|" + itemId) && !this.cache.item.has(itemId)) {
@@ -112,25 +121,8 @@ class Home {
 		return this.injectCall("getImageUrl", itemId + ", " + JSON.stringify(options));
 	}
 
-	/* 插入Banner */
-	static async initBanner() {
-		const banner = `
-		<div class="misty-banner">
-			<div class="misty-banner-body">
-			</div>
-			<div class="misty-banner-library">
-				<div class="misty-banner-logos"></div>
-			</div>
-		</div>
-		`;
-		$(".view:not(.hide) .homeSectionsContainer").prepend(banner);
-		// $(".view:not(.hide) .section0").detach().appendTo(".view:not(.hide) .misty-banner-library");
-
-		// 插入数据
-		const data = await this.getItems(this.itemQuery);
-		console.log(data);
-		data.Items.forEach(async (item) => {
-			const detail = await this.getItem(item.Id),
+	static async appendItem(i){
+		const detail = await this.getItem(this.data.Items[i].Id),
 				itemHtml = `
 			<div class="misty-banner-item" id="${detail.Id}">
 				<img draggable="false" loading="eager" decoding="async" class="misty-banner-cover" src="${await this.getImageUrl(detail.Id, this.coverOptions)}" alt="Backdrop" style="">
@@ -148,39 +140,94 @@ class Home {
 				$(".misty-banner-logos").append(logoHtml);
 			}
 			$(".misty-banner-body").append(itemHtml);
-			console.log(item.Id, detail);
-		});
+	}
+	
+	static async bannerRoll(){
+		// 背景切换
+		this.index += this.index + 1 == $(".misty-banner-item").length ? -this.index : 1;
+		//已经切换到最后且总数大于10
+		if(this.index == 0 && this.data.Items.length >= 10){
+			clearInterval(this.bannerInterval);
+			let l = $(".misty-banner-item").length;
+			//剩余小于10张直接舍弃，从头开始
+			if(this.count+1==this.data.Items.length||this.data.Items.length-this.count-1<10)
+				this.count=-1;
+			//向后添加,剩余10张以上添加10张
+			for(let i=this.count+1;i<this.count+1+(this.data.Items.length-this.count-1<10?this.data.Items.length-this.count-1:10);i++){
+				await this.appendItem(i)
+			}
+			//切换到第一张
+			$(".misty-banner-body").css("left", "0%");
+			$(".misty-banner-item.active").removeClass("active");
+			let id = $(".misty-banner-item").eq(l).addClass("active").attr("id");
+			$(".misty-banner-logo.active").removeClass("active");
+			$(`.misty-banner-logo[id=${id}]`).addClass("active");
+			//从dom中移除上一轮次的横幅
+			for(let i=0;i<l;i++){
+				$(".misty-banner-item").eq(0).remove();
+			}
+			this.bannerInterval = setInterval(this.bannerRoll.bind(this), this.config.interval);
+		} else {
+			$(".misty-banner-body").css("left", -(this.index * 100).toString() + "%");
+			// 信息切换
+			$(".misty-banner-item.active").removeClass("active");
+			let id = $(".misty-banner-item").eq(this.index).addClass("active").attr("id");
+			// LOGO切换
+			$(".misty-banner-logo.active").removeClass("active");
+			$(`.misty-banner-logo[id=${id}]`).addClass("active");
+		}
+		this.count++;
+	}
+	
+	/* 插入Banner */
+	static async initBanner() {
+		const banner = `
+		<div class="misty-banner">
+			<div class="misty-banner-body">
+			</div>
+			<div class="misty-banner-library">
+				<div class="misty-banner-logos"></div>
+			</div>
+		</div>
+		`;
+		$(".view:not(.hide) .homeSectionsContainer").prepend(banner);
+		$(".view:not(.hide) .section0").detach().appendTo(".view:not(.hide) .misty-banner-library");
+
+		// 插入数据
+		this.data = {Items:[]}
+		//配置的媒体库不为空
+		if(this.config.parentIds[0] != ""){
+			//合并所有配置的媒体库的结果
+			for(let parentId of this.config.parentIds){
+				this.itemQuery.ParentId = parentId;
+				let res = await this.getItems(this.itemQuery);
+				this.data.Items = this.data.Items.concat(res.Items);
+			}
+		} else {
+			//查询所有媒体库
+			this.data = await this.getItems(this.itemQuery);
+		}
+		
+		if(this.config.random==true){
+			this.data.Items = this.itemsRandom(this.data.Items);
+		}
+		//大于10时添加10张				   
+		for(let i=0;i<(this.data.Items.length<10?this.data.Items.length:10);i++){
+			await this.appendItem(i)
+		}
 
 		// 只判断第一张海报加载完毕, 优化加载速度
 		await new Promise((resolve, reject) => {
 			let waitLoading = setInterval(() => {
-				if (document.querySelector(".misty-banner-cover")?.complete) {
+				if (document.querySelector(".misty-banner-cover").complete) {
 					clearInterval(waitLoading);
 					resolve();
 				}
 			}, 16);
 		});
 
-		// 判断section0加载完毕
-		await new Promise((resolve, reject) => {
-			let waitsection0 = setInterval(() => {
-				if ($(".view:not(.hide) .section0 .emby-scrollbuttons").length > 0 && $(".view:not(.hide) .section0.hide").length == 0) {
-					clearInterval(waitsection0);
-					resolve();
-				}
-			}, 16);
-		});
-
-		$(".view:not(.hide) .section0 .emby-scrollbuttons").remove();
-		const items = $(".view:not(.hide) .section0 .emby-scroller .itemsContainer")[0].items;
-		if (CommonUtils.checkType() === 'pc') {
-			$(".view:not(.hide) .section0").detach().appendTo(".view:not(.hide) .misty-banner-library");
-		}
-
 		$(".misty-loading").fadeOut(500, () => $(".misty-loading").remove());
 		await CommonUtils.sleep(150);
-		$(".view:not(.hide) .section0 .emby-scroller .itemsContainer")[0].items = items;
-
 		// 置入场动画
 		let delay = 80; // 动媒体库画间隔
 		let id = $(".misty-banner-item").eq(0).addClass("active").attr("id"); // 初次信息动画
@@ -193,21 +240,9 @@ class Home {
 		$(".section0 > div").removeClass("misty-banner-library-overflow"); // 开启overflow 防止无法滚动
 
 		// 滚屏逻辑
-		var index = 0;
+		this.index = 0;this.count = 0;
 		clearInterval(this.bannerInterval);
-		this.bannerInterval = setInterval(() => {
-			// 背景切换
-			if (window.location.href.endsWith("home") && !document.hidden) {
-				index += index + 1 == $(".misty-banner-item").length ? -index : 1;
-				$(".misty-banner-body").css("left", -(index * 100).toString() + "%");
-				// 信息切换
-				$(".misty-banner-item.active").removeClass("active");
-				let id = $(".misty-banner-item").eq(index).addClass("active").attr("id");
-				// LOGO切换
-				$(".misty-banner-logo.active").removeClass("active");
-				$(`.misty-banner-logo[id=${id}]`).addClass("active");
-			}
-		}, 8000);
+		this.bannerInterval = setInterval(this.bannerRoll.bind(this), this.config.interval);
 	}
 
 	/* 初始事件 */
@@ -216,13 +251,13 @@ class Home {
 		const script = `
 		// 挂载appRouter
 		if (!window.appRouter) window.appRouter = (await window.require(["appRouter"]))[0];
-		/* // 修复library事件参数
+		// 修复library事件参数
 		const serverId = ApiClient._serverInfo.Id,
 			librarys = document.querySelectorAll(".view:not(.hide) .section0 .card");
 		librarys.forEach(library => {
 			library.setAttribute("data-serverid", serverId);
 			library.setAttribute("data-type", "CollectionFolder");
-		}); */
+		});
 		`;
 		this.injectCode(script);
 	}
