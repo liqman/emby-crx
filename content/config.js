@@ -2,7 +2,7 @@ class Config{
 	constructor() {
 		//媒体库id，用逗号分隔。进入媒体库后url里的parentId
 		//this.parentId = "5,21463";
-                this.parentId = "235,237,39,776,849,388,3,851,34442,5244,7009,54715";
+                this.parentId = "235,237,39,776,849,388,3,851,34442,5244,7009";
 		//滚屏间隔 ms
 		this.interval = 8000;
 		//是否开启随机
